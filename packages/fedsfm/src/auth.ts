@@ -1,4 +1,6 @@
 import https from 'https';
+import { readFileSync } from 'fs';
+import { execSync } from 'child_process';
 import { AuthenticationException, ApiResponse } from './types.js';
 
 export class AuthenticationService {
@@ -49,7 +51,163 @@ export class AuthenticationService {
   }
 
   private async loadCertificate(serialNumber: string): Promise<{ cert: Buffer; key: Buffer }> {
-    throw new Error('The loadCertificate method must be implemented. To work with certificates from the Windows store, please use a specialized library or provide file paths for the certificate.');
+    const certPath = process.env.FEDSFM_CERT_PATH;
+    const keyPath = process.env.FEDSFM_KEY_PATH;
+    const pfxPath = process.env.FEDSFM_PFX_PATH;
+    const pfxPassword = process.env.FEDSFM_PFX_PASSWORD;
+
+    if (certPath && keyPath) {
+      try {
+        const cert = readFileSync(certPath);
+        const key = readFileSync(keyPath);
+        console.log(`Certificate loaded from files: ${certPath}, ${keyPath}`);
+        return { cert, key };
+      } catch (error) {
+        const err = error as Error;
+        throw new Error(`Failed to load certificate from files: ${err.message}`);
+      }
+    }
+
+    if (pfxPath) {
+      try {
+        const password = pfxPassword || '';
+        const tempDir = process.env.TMPDIR || process.env.TMP || '/tmp';
+        const certPath = `${tempDir}/fedsfm_cert_${Date.now()}.pem`;
+        const keyPath = `${tempDir}/fedsfm_key_${Date.now()}.pem`;
+        
+        try {
+          const passArg = password ? `-passin pass:${password}` : '-nodes';
+          execSync(`openssl pkcs12 -in "${pfxPath}" -out "${certPath}" -clcerts -nokeys ${passArg}`, { stdio: 'pipe' });
+          execSync(`openssl pkcs12 -in "${pfxPath}" -out "${keyPath}" -nocerts -nodes ${passArg}`, { stdio: 'pipe' });
+          
+          const cert = readFileSync(certPath);
+          const key = readFileSync(keyPath);
+          
+          const { unlinkSync } = await import('fs');
+          try {
+            unlinkSync(certPath);
+          } catch {
+          }
+          try {
+            unlinkSync(keyPath);
+          } catch {
+          }
+          
+          console.log(`Certificate loaded from PFX file: ${pfxPath}`);
+          return { cert, key };
+        } catch (opensslError) {
+          const { unlinkSync } = await import('fs');
+          try {
+            unlinkSync(certPath);
+          } catch {
+          }
+          try {
+            unlinkSync(keyPath);
+          } catch {
+          }
+          throw new Error(`Failed to extract certificate from PFX: ${(opensslError as Error).message}. Make sure OpenSSL is installed.`);
+        }
+      } catch (error) {
+        const err = error as Error;
+        throw new Error(`Failed to load PFX certificate: ${err.message}`);
+      }
+    }
+
+    try {
+      const certData = await this.findCertificateInStore(serialNumber);
+      if (certData) {
+        console.log(`Certificate found in system store with serial number: ${serialNumber}`);
+        return certData;
+      }
+    } catch (storeError) {
+      console.warn(`Failed to search certificate in system store: ${(storeError as Error).message}`);
+    }
+
+    throw new Error(
+      `Certificate not found. Please provide one of the following:\n` +
+      `- FEDSFM_CERT_PATH and FEDSFM_KEY_PATH environment variables (for PEM files)\n` +
+      `- FEDSFM_PFX_PATH environment variable (for PFX/P12 file, optionally FEDSFM_PFX_PASSWORD)\n` +
+      `- Or ensure certificate with serial number "${serialNumber}" is available in system certificate store`
+    );
+  }
+
+  private async findCertificateInStore(serialNumber: string): Promise<{ cert: Buffer; key: Buffer } | null> {
+    const platform = process.platform;
+
+    if (platform === 'win32') {
+      return this.findCertificateWindows(serialNumber);
+    } else if (platform === 'darwin') {
+      return this.findCertificateMacOS(serialNumber);
+    } else {
+      return this.findCertificateLinux(serialNumber);
+    }
+  }
+
+  private async findCertificateWindows(serialNumber: string): Promise<{ cert: Buffer; key: Buffer } | null> {
+    try {
+      const powershellScript = `
+        $cert = Get-ChildItem -Path Cert:\\CurrentUser\\My | Where-Object { $_.SerialNumber -eq "${serialNumber}" } | Select-Object -First 1
+        if ($cert) {
+          $certPath = [System.IO.Path]::GetTempFileName()
+          $keyPath = [System.IO.Path]::GetTempFileName()
+          Export-Certificate -Cert $cert -FilePath $certPath | Out-Null
+          $cert | Export-PfxCertificate -FilePath $keyPath -Password (ConvertTo-SecureString -String "temp" -AsPlainText -Force) | Out-Null
+          Write-Output "$certPath|$keyPath"
+        }
+      `;
+      
+      const result = execSync(`powershell -Command "${powershellScript}"`, { encoding: 'utf8' }).trim();
+      if (result && result.includes('|')) {
+        const [certPath] = result.split('|');
+        const cert = readFileSync(certPath);
+        return {
+          cert,
+          key: cert
+        };
+      }
+    } catch (error) {
+      console.warn(`Windows certificate search failed: ${(error as Error).message}`);
+    }
+    return null;
+  }
+
+  private async findCertificateMacOS(serialNumber: string): Promise<{ cert: Buffer; key: Buffer } | null> {
+    try {
+      const serialNumberHex = serialNumber.replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+      const command = `security find-certificate -c "${serialNumberHex}" -p`;
+      const certPem = execSync(command, { encoding: 'utf8' });
+      
+      if (certPem && certPem.includes('BEGIN CERTIFICATE')) {
+        const cert = Buffer.from(certPem);
+        return {
+          cert,
+          key: cert
+        };
+      }
+    } catch (error) {
+      console.warn(`macOS certificate search failed: ${(error as Error).message}`);
+    }
+    return null;
+  }
+
+  private async findCertificateLinux(serialNumber: string): Promise<{ cert: Buffer; key: Buffer } | null> {
+    try {
+      const serialNumberHex = serialNumber.replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+      const command = `openssl x509 -in /etc/ssl/certs/*.pem -noout -serial 2>/dev/null | grep -i "${serialNumberHex}" | head -1`;
+      const result = execSync(command, { encoding: 'utf8', stdio: 'pipe' }).trim();
+      
+      if (result) {
+        const certPath = result.split(' ')[0];
+        const cert = readFileSync(certPath);
+        return {
+          cert,
+          key: cert
+        };
+      }
+    } catch (error) {
+      console.warn(`Linux certificate search failed: ${(error as Error).message}`);
+    }
+    return null;
   }
 
   private async authenticate(
