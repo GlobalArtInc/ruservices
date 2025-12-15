@@ -1,0 +1,45 @@
+{
+  "name": "@globalart/fedsfm",
+  "version": "0.0.5",
+  "author": "Globalart, Inc",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "build:watch": "tsdown --watch",
+    "example:prod": "tsx src/examples/prod.ts",
+    "example:test": "tsx src/examples/test.ts",
+    "prepublishOnly": "npm run build",
+    "publish:dev": "npm publish --access public --tag dev",
+    "publish:npm": "release-it --config ../../.release-it.json"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.2",
+    "typescript": "^5.9.3",
+    "tsdown": "^0.15.11",
+    "tsx": "^4.19.2",
+    "release-it": "^19.0.5"
+  },
+  "description": "Fedsfm API functions for Node.js",
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "fedsfm",
+    "api",
+    "node-fedsfm-api"
+  ],
+  "license": "MIT"
+}
