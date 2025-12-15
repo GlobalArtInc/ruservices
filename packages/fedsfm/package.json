@@ -1,6 +1,6 @@
 {
   "name": "@globalart/fedsfm",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "author": "Globalart, Inc",
   "type": "module",
   "main": "./dist/index.js",
@@ -22,9 +22,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "dependencies": {
-    
-  },
+  "dependencies": {},
   "devDependencies": {
     "@types/node": "^25.0.2",
     "typescript": "^5.9.3",
